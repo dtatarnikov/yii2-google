@@ -3,6 +3,9 @@ namespace strong2much\google\api;
 
 use Yii;
 use yii\base\Exception;
+use yii\helpers\Json;
+use yii\httpclient\Client;
+use yii\web\HttpException;
 
 /**
  * GCMApi class to work with GCM (Google Cloud Messages) server
@@ -12,14 +15,8 @@ use yii\base\Exception;
  */
 class GCM
 {
+    const BASE_URL = 'https://android.googleapis.com/gcm/send';
     const MAX_DEVICES_COUNT = 1000; //max devices that can be connected
-
-    /**
-     * @var array Maps aliases to Facebook domains.
-     */
-    public static $domainMap = [
-        'gcm' => 'https://android.googleapis.com/gcm/send',
-    ];
 
     /**
      * @var string API key
@@ -38,7 +35,7 @@ class GCM
     public function __construct($apiKey)
 	{
         if(strlen($apiKey) < 8){
-            throw new Exception(Yii::t('google', 'Invalid API key'), 500);
+            throw new Exception('Invalid API key');
         }
         $this->_apiKey = $apiKey;
     }
@@ -87,7 +84,7 @@ class GCM
     public function send($message, $title = '', $data = [])
     {
         if(!is_array($this->_devices) || count($this->_devices) == 0){
-            throw new Exception(Yii::t('google', 'No devices specified'), 500);
+            throw new Exception('No devices specified');
         }
 
         $fields = [
@@ -114,7 +111,7 @@ class GCM
             $devices = array_slice($this->_devices, $i*self::MAX_DEVICES_COUNT, self::MAX_DEVICES_COUNT);
             $fields['registration_ids'] = $devices;
 
-            $result = (array)$this->makeRequest(self::$domainMap['gcm'], $fields);
+            $result = $this->makeRequest($fields);
             if(empty($response)) {
                 $response = $result;
             } else {
@@ -130,83 +127,52 @@ class GCM
 
     /**
      * Makes the curl request to the url.
-     * @param string $url url to request.
-     * @param array $options additional data to send.
-     * @return array|mixed the response.
-     * @throws Exception
+     * @param array $options HTTP post data
+     * @return array the response.
+     * @throws HttpException
      */
-    protected function makeRequest($url, $options = [])
+    protected function makeRequest($options = [])
     {
-        $ch = $this->initRequest($url, $options);
+        $request = $this->initRequest($options);
+        $response = $request->send();
 
-        $result = curl_exec($ch);
-        $headers = curl_getinfo($ch);
+        $data = $response->getData();
 
-        if (curl_errno($ch) > 0) {
-            throw new Exception(curl_error($ch), curl_errno($ch));
-        }
-
-        if ($headers['http_code'] != 200) {
+        if(!$response->isOk) {
             Yii::error(
-                'Invalid response http code: ' . $headers['http_code'] . '.' . PHP_EOL .
-                'URL: ' . $url . PHP_EOL .
-                'Options: ' . var_export($options, true) . PHP_EOL .
-                'Result: ' . $result, 'vendor.strong2much.google'
+                'Invalid response http code: ' . $response->getStatusCode() . '.' . PHP_EOL .
+                'Headers: ' . Json::encode($response->getHeaders()->toArray()) . '.' . PHP_EOL .
+                'Options: ' . Json::encode($options) . PHP_EOL .
+                'Result: ' . (is_array($data) ? Json::encode($data) : var_export($data, true)),
+                __METHOD__
             );
-            throw new Exception(Yii::t('google', 'Invalid response http code: {code}.', ['{code}' => $headers['http_code']]), $headers['http_code']);
+            throw new HttpException($response->getStatusCode());
         }
 
-        curl_close($ch);
-
-        return $this->parseJson($result);
+        return $data;
     }
 
     /**
-     * Initializes a new session and return a cURL handle.
-     * @param string $url url to request.
-     * @param array $options data to send.
-     * @return resource cURL handle.
+     * Initializes a new request.
+     * @param array $options HTTP post data
+     * @return \yii\httpclient\Request
      */
-    protected function initRequest($url, $options = [])
+    protected function initRequest($options = [])
     {
-        $headers = [
-            'Authorization: key=' . $this->_apiKey,
-            'Content-Type: application/json'
-        ];
+        $client = new Client([
+            'requestConfig' => [
+                'format' => Client::FORMAT_JSON
+            ],
+        ]);
 
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-        curl_setopt($ch, CURLOPT_HEADER, 0);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
-        curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_0);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_POST, 1);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($options));
+        $request = $client->createRequest()
+            ->setMethod('post')
+            ->setUrl(self::BASE_URL)
+            ->setData($options)
+            ->setHeaders([
+                'Authorization' => 'key=' . $this->_apiKey,
+            ]);
 
-        curl_setopt($ch, CURLOPT_URL, $url);
-        return $ch;
-    }
-
-    /**
-     * Parse response from {@link makeRequest} in json format and check OAuth errors.
-     * @param string $response Json string.
-     * @return array result as associative array.
-     * @throws Exception
-     */
-    protected function parseJson($response)
-    {
-        try {
-            $result = json_decode($response, true);
-            if (!isset($result)) {
-                throw new Exception(Yii::t('google', 'Invalid response format'), 500);
-            }
-            else {
-                return $result;
-            }
-        } catch (\Exception $e) {
-            throw new Exception($e->getMessage(), $e->getCode());
-        }
+        return $request;
     }
 }
